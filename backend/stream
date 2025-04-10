@@ -108,3 +108,108 @@ chatBox.scrollTop = chatBox.scrollHeight;
 ---
 
 Let me know if you'd also like to stream the **DB results** or just keep those non-streamed after the SQL is ready.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+async function sendQuestion() {
+  const input = document.getElementById("user-input");
+  const chatBox = document.getElementById("chat-box");
+  const question = input.value.trim();
+
+  if (!question) return;
+
+  // Show user message
+  const userDiv = document.createElement("div");
+  userDiv.className = "user-msg";
+  userDiv.textContent = "You: " + question;
+  chatBox.appendChild(userDiv);
+
+  input.value = "";
+  chatBox.scrollTop = chatBox.scrollHeight;
+
+  // Create bot message container with pre tag for streaming
+  const botDiv = document.createElement("div");
+  botDiv.className = "bot-msg";
+  botDiv.innerHTML = "<strong>SQL:</strong><pre id='sql-output'></pre>";
+  chatBox.appendChild(botDiv);
+  chatBox.scrollTop = chatBox.scrollHeight;
+
+  try {
+    // Step 1: Stream SQL generation
+    const res = await fetch("/api/stream-query", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question })
+    });
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let sqlText = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      sqlText += decoder.decode(value);
+      document.getElementById("sql-output").textContent = sqlText;
+      chatBox.scrollTop = chatBox.scrollHeight;
+    }
+
+    // Step 2: Send final SQL to backend to execute and fetch results
+    const finalRes = await fetch("/api/query", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question }) // same question will re-generate same SQL
+    });
+
+    const data = await finalRes.json();
+
+    if (data.error) {
+      const errorHTML = `<div style="color: red;"><strong>Error:</strong> ${data.error}</div>`;
+      botDiv.innerHTML += errorHTML;
+    }
+
+    if (data.results && data.results.length) {
+      const keys = Object.keys(data.results[0]);
+      let tableHTML = `<table><thead><tr>${keys.map(k => `<th>${k}</th>`).join("")}</tr></thead><tbody>`;
+      data.results.forEach(row => {
+        tableHTML += `<tr>${keys.map(k => `<td>${row[k]}</td>`).join("")}</tr>`;
+      });
+      tableHTML += `</tbody></table>`;
+      botDiv.innerHTML += tableHTML;
+    }
+
+    chatBox.scrollTop = chatBox.scrollHeight;
+
+  } catch (err) {
+    const errorDiv = document.createElement("div");
+    errorDiv.className = "bot-msg";
+    errorDiv.innerHTML = `<strong>Bot:</strong> ❌ Unexpected error: ${err.message}`;
+    chatBox.appendChild(errorDiv);
+    chatBox.scrollTop = chatBox.scrollHeight;
+  }
+}
+
