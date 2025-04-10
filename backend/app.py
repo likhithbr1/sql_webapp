@@ -1,23 +1,19 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-from core_logic import process_question  # <- import your main function
+from core_logic import init_models, process_question
 
-# -------------------------------------
 # Initialize Flask app
-# -------------------------------------
 app = Flask(__name__)
-CORS(app)  # Enable CORS for frontend integration
+CORS(app)
 
-# -------------------------------------
-# Health Check Endpoint
-# -------------------------------------
+# Load all models and indexes at server startup
+print("🚀 Starting server...")
+init_models()
+
 @app.route("/api/health", methods=["GET"])
 def health_check():
     return jsonify({"status": "ok"})
 
-# -------------------------------------
-# Main Chatbot Endpoint
-# -------------------------------------
 @app.route("/api/query", methods=["POST"])
 def handle_query():
     try:
@@ -30,16 +26,12 @@ def handle_query():
         if not question:
             return jsonify({"error": "Empty question"}), 400
 
-        # Call your core logic
         result = process_question(question)
-
         return jsonify(result)
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-# -------------------------------------
-# Run the app (local dev)
-# -------------------------------------
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    app.run(host="0.0.0.0", port=5000, debug=False, threaded=False)
+
