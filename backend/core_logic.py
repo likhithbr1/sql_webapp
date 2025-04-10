@@ -118,35 +118,27 @@ The query will run on a database with the following schema:
 """
 
 
+
+# ----------------------------------------------------------------------
+# Public Init and Inference Functions
+# ----------------------------------------------------------------------
+
+def init_models():
+    global _faiss_index, _metadata, _rev_fk_map, _embed_model, _llm
+    print("🔧 Initializing FAISS, Embeddings, SQLCoder...")
+    _faiss_index, _metadata = load_faiss_and_metadata(INDEX_PATH, META_PATH)
+    _rev_fk_map = build_reverse_fk_map(_metadata)
+    _embed_model = SentenceTransformer(EMBED_MODEL_NAME)
+    _llm = load_llama(LLAMA_MODEL_PATH)
+    print("✅ Models loaded and ready!")
+
 def process_question(question: str) -> dict:
-    """
-    Accepts a natural-language question and returns:
-        - generated SQL query
-        - result rows (list of dicts)
-    """
     try:
-        # Load models and resources once
-        global _faiss_index, _metadata, _rev_fk_map, _embed_model, _llm
-
-        if "_faiss_index" not in globals():
-            _faiss_index, _metadata = load_faiss_and_metadata(INDEX_PATH, META_PATH)
-            _rev_fk_map = build_reverse_fk_map(_metadata)
-            _embed_model = SentenceTransformer(EMBED_MODEL_NAME)
-            _llm = load_llama(LLAMA_MODEL_PATH)
-
-        # Semantic search
         idxs = semantic_search(question, _embed_model, _faiss_index, TOP_K)
-
-        # Expand with related tables
         final_tables = expand_with_related(idxs, _metadata, _rev_fk_map)
-
-        # Schema snippet
         schema_text = build_schema_snippet(final_tables, _metadata)
-
-        # Prompt construction
         prompt = PROMPT_TEMPLATE.format(question=question, schema=schema_text)
 
-        # SQL generation
         final_sql = ""
         for chunk in _llm.create_completion(
             prompt,
@@ -159,7 +151,6 @@ def process_question(question: str) -> dict:
 
         final_sql = final_sql.strip()
 
-        # Execute SQL using SQLAlchemy
         engine = create_engine(DB_URI)
         with engine.connect() as connection:
             result = connection.execute(text(final_sql))
