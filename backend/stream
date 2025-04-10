@@ -1,0 +1,110 @@
+Awesome — now that you want to stream the SQL response to the frontend in real time, here's how we can do it using **Server-Sent Events (SSE)**, which is perfect for this use case.
+
+---
+
+## ✅ What We'll Do
+
+1. **Backend (Flask):**
+   - Create a new `/api/stream-query` endpoint
+   - Use `yield` to stream chunks of the model's SQL response
+
+2. **Frontend (JavaScript):**
+   - Replace the `fetch("/api/query")` with an **`EventSource`** or `ReadableStream` using `fetch` and `text()` streaming
+
+---
+
+## 🔧 Step 1: Flask Streaming Endpoint
+
+In `app.py`, add this endpoint:
+
+```python
+from flask import Response, stream_with_context
+from core_logic import stream_sql_generation
+
+@app.route("/api/stream-query", methods=["POST"])
+def stream_query():
+    try:
+        data = request.get_json()
+        question = data.get("question", "").strip()
+        if not question:
+            return jsonify({"error": "Empty question"}), 400
+
+        def generate():
+            for chunk in stream_sql_generation(question):
+                yield chunk
+
+        return Response(stream_with_context(generate()), mimetype="text/plain")
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+```
+
+---
+
+## 🔧 Step 2: Add Streaming Support in `core_logic.py`
+
+Add this new function:
+
+```python
+def stream_sql_generation(question: str):
+    idxs = semantic_search(question, _embed_model, _faiss_index, TOP_K)
+    final_tables = expand_with_related(idxs, _metadata, _rev_fk_map)
+    schema_text = build_schema_snippet(final_tables, _metadata)
+    prompt = PROMPT_TEMPLATE.format(question=question, schema=schema_text)
+
+    for chunk in _llm.create_completion(
+        prompt,
+        max_tokens=512,
+        stop=["```"],
+        temperature=0.1,
+        stream=True,
+    ):
+        piece = chunk["choices"][0]["text"]
+        yield piece
+```
+
+This sends SQL **as it’s being generated**, chunk-by-chunk.
+
+---
+
+## 🖥️ Step 3: Update `sendQuestion()` in `script.js`
+
+Replace `fetch(...)` with:
+
+```javascript
+const res = await fetch("/api/stream-query", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ question })
+});
+
+const reader = res.body.getReader();
+const decoder = new TextDecoder();
+let botDiv = document.createElement("div");
+botDiv.className = "bot-msg";
+botDiv.innerHTML = "<strong>SQL:</strong><pre id='sql-output'></pre>";
+chatBox.appendChild(botDiv);
+
+let sqlText = "";
+
+while (true) {
+  const { done, value } = await reader.read();
+  if (done) break;
+  sqlText += decoder.decode(value);
+  document.getElementById("sql-output").textContent = sqlText;
+}
+
+chatBox.scrollTop = chatBox.scrollHeight;
+```
+
+---
+
+## ✅ Result
+
+- SQL query **streams in real-time** as it's being generated
+- Frontend shows live typing effect
+- Much better UX — no more 3-minute wait
+
+---
+
+Let me know if you'd also like to stream the **DB results** or just keep those non-streamed after the SQL is ready.
