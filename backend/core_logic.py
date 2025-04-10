@@ -18,6 +18,10 @@ TOP_K = 3                      # top‑K tables from semantic search
 N_CTX = 2048                   # SQLCoder context window
 N_THREADS = 6                  # adjust for your CPU
 # ----------------------------------------------------------------------
+from sqlalchemy import create_engine, text
+
+# ✅ Your MySQL DB config — update as needed
+DB_URI = "mysql+pymysql://root:admin@localhost/chatbot"
 
 
 def load_faiss_and_metadata(index_path: str, meta_path: str):
@@ -114,36 +118,11 @@ The query will run on a database with the following schema:
 """
 
 
-
-import pymysql
-
-def run_sql_query(query: str, host="localhost", user="root", password="admin", db="your_database") -> tuple[list[list], list[str], str | None]:
-    """
-    Runs the SQL query and returns (results, column_names, error).
-    If there's an error, results and columns will be empty, and error will be a string.
-    """
-    try:
-        conn = pymysql.connect(host=host, user=user, password=password, database=db)
-        with conn.cursor() as cursor:
-            cursor.execute(query)
-            results = cursor.fetchall()
-            columns = [desc[0] for desc in cursor.description]
-        conn.close()
-
-        return results, columns, None  # no error
-
-    except Exception as e:
-        return [], [], str(e)  # return error string
-
-
-
 def process_question(question: str) -> dict:
     """
     Accepts a natural-language question and returns:
         - generated SQL query
-        - DB query result rows
-        - column names
-        - any error encountered (None if successful)
+        - result rows (list of dicts)
     """
     try:
         # Load models and resources once
@@ -168,7 +147,7 @@ def process_question(question: str) -> dict:
         prompt = PROMPT_TEMPLATE.format(question=question, schema=schema_text)
 
         # SQL generation
-        sql = ""
+        final_sql = ""
         for chunk in _llm.create_completion(
             prompt,
             max_tokens=512,
@@ -176,22 +155,24 @@ def process_question(question: str) -> dict:
             temperature=0.1,
             stream=True,
         ):
-            sql += chunk["choices"][0]["text"]
+            final_sql += chunk["choices"][0]["text"]
 
-        # Execute query
-        results, columns, error = run_sql_query(sql.strip())
+        final_sql = final_sql.strip()
+
+        # Execute SQL using SQLAlchemy
+        engine = create_engine(DB_URI)
+        with engine.connect() as connection:
+            result = connection.execute(text(final_sql))
+            rows = [dict(row._mapping) for row in result.fetchall()]
 
         return {
-            "sql": sql.strip(),
-            "columns": columns,
-            "result": results,
-            "error": error
+            "sql": final_sql,
+            "results": rows
         }
 
     except Exception as e:
         return {
             "sql": None,
-            "columns": [],
-            "result": [],
+            "results": [],
             "error": str(e)
         }
