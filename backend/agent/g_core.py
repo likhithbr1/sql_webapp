@@ -3,8 +3,9 @@ import re
 import numpy as np
 import faiss
 from sentence_transformers import SentenceTransformer
-from llama_cpp import Llama
 from sqlalchemy import create_engine, text
+import torch
+import sqlparse
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 # ------------------------------
@@ -13,14 +14,9 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 INDEX_PATH = "schema_index/faiss_index.bin"
 META_PATH = "schema_index/table_metadata.json"
 EMBED_MODEL_NAME = "BAAI/bge-small-en"
-LLAMA_MODEL_PATH = "sqlcoder-7b-2.Q4_K_M.gguf"   # your GGUF file for SQLCoder
 TOP_K = 3                      # top-K tables from semantic search
-DB_URI = "sqlite:///chatbot.db"  # SQLite DB inside Colab
-MODEL_NAME = "defog/sqlcoder-7b-2"
-
-
-
-
+DB_URI = "sqlite:///chatbot.db"  # SQLite DB
+MODEL_NAME = "defog/sqlcoder-7b-2"  # Hugging Face model name for SQLCoder
 
 # ------------------------------
 # Load FAISS index and table metadata
@@ -65,7 +61,7 @@ def expand_with_related(idx_list, metadata, rev_fk_map):
 
 def build_schema_snippet(table_names: set, metadata: dict) -> str:
     ddl_list = []
-    # Preserve original order (if desired)
+    # Preserve original order
     for meta in metadata.values():
         if meta["table_name"] in table_names:
             ddl_list.append(meta["create_stmt"])
@@ -78,72 +74,37 @@ def get_relevant_schema_snippet(query: str, embed_model, faiss_index, metadata, 
     return schema_text
 
 # ------------------------------
-# Custom LLM Wrapper for SQLCoder (using your Llama model)
+# Custom LLM Wrapper for SQLCoder using Hugging Face Transformers
 # ------------------------------
 from langchain_core.language_models.llms import LLM
 from typing import Optional, List, Mapping, Any
-import requests
 
 class SQLCoderLLM(LLM):
-    """Custom LLM wrapper for the SQLCoder model hosted locally/in your environment."""
-    model_endpoint: str = ""  # Not used here because we call our local Llama model directly.
-    api_token: str = ""       # Not used here; we use a local model.
-    
+    """Custom LLM wrapper for the SQLCoder model using Hugging Face transformers."""
     def _llm_type(self) -> str:
         return "sqlcoder"
 
     def _call(self, prompt: str, stop: Optional[List[str]] = None) -> str:
-        # In our case, _llm is the Llama SQLCoder model instance loaded below.
-        # We assume that _llm.create_completion yields chunks of generated text.
-        final_text = ""
-        for chunk in _llm.create_completion(
-            prompt,
-            max_tokens=512,
-            stop=stop or ["```"],
-            temperature=0.1,
-            stream=False  # Change to True if you want streaming support.
-        ):
-            final_text += chunk["choices"][0]["text"]
-        return final_text.strip()
+        inputs = _tokenizer(prompt, return_tensors="pt").to(_model.device)
+        outputs = _model.generate(
+            **inputs,
+            max_new_tokens=512,
+            eos_token_id=_tokenizer.eos_token_id,
+            pad_token_id=_tokenizer.eos_token_id,
+            do_sample=False,
+            num_beams=1,
+        )
+        return _tokenizer.decode(outputs[0], skip_special_tokens=True).strip()
 
     @property
     def _identifying_params(self) -> Mapping[str, Any]:
-        return {"model_path": LLAMA_MODEL_PATH}
+        return {"model_name": MODEL_NAME}
 
 # ------------------------------
-# Load Llama-based SQLCoder Model
+# Query Generation Function using Hugging Face Model
 # ------------------------------
-def load_llama(model_path: str):
-    print(f"Loading SQLCoder model from {model_path} …")
-    return Llama(
-        model_path=model_path,
-        n_gpu_layers=0,       # CPU only; adjust if GPU is available
-        n_ctx=N_CTX,
-        n_threads=N_THREADS,
-        verbose=True,
-        n_batch=512,
-        use_mlock=True,
-        use_mmap=True,
-        logits_all=False,
-    )
-
-# ------------------------------
-# Agent Prompt Template
-# ------------------------------
-CUSTOM_PROMPT_TEMPLATE = """### Task
-Generate a SQL query to answer the following question:
-{question}
-
-### Relevant Database Schema
-{schema}
-
-### SQL Query
-```sql
-"""
-
-
 def generate_query(prompt: str) -> str:
-    inputs = _tokenizer(prompt, return_tensors="pt").to("cuda")
+    inputs = _tokenizer(prompt, return_tensors="pt").to(_model.device)
     generated_ids = _model.generate(
         **inputs,
         num_return_sequences=1,
@@ -155,18 +116,25 @@ def generate_query(prompt: str) -> str:
     )
     outputs = _tokenizer.batch_decode(generated_ids, skip_special_tokens=True)
     torch.cuda.empty_cache()
-    torch.cuda.synchronize()
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
     return sqlparse.format(outputs[0].split("[SQL]")[-1], reindent=True)
+
 # ------------------------------
 # Initialization of Global Components
 # ------------------------------
 def init_models():
-    global _faiss_index, _metadata, _rev_fk_map, _embed_model, _llm, _engine, sqlcoder_llm
-    print("Initializing FAISS index, embeddings, Llama (SQLCoder), and database connection …")
+    global _faiss_index, _metadata, _rev_fk_map, _embed_model, _tokenizer, _model, _engine, sqlcoder_llm
+    print("Initializing FAISS index, embeddings, SQLCoder model with Hugging Face transformers, and database connection …")
     _faiss_index, _metadata = load_faiss_and_metadata(INDEX_PATH, META_PATH)
     _rev_fk_map = build_reverse_fk_map(_metadata)
     _embed_model = SentenceTransformer(EMBED_MODEL_NAME)
-    _llm = load_llama(LLAMA_MODEL_PATH)  # Load your SQLCoder Llama model
+    
+    # Initialize Hugging Face tokenizer and model
+    _tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+    _model = AutoModelForCausalLM.from_pretrained(MODEL_NAME)
+    _model.to("cuda" if torch.cuda.is_available() else "cpu")
+    
     _engine = create_engine(DB_URI)
     
     # Initialize our custom LLM wrapper for SQLCoder
@@ -176,26 +144,18 @@ def init_models():
 
 # ------------------------------
 # --- Integration with LangChain SQL Agent ---
-# We'll use LangChain's create_sql_agent and the RunnablePassthrough
-# to inject our custom schema retrieval.
 # ------------------------------
-
-# Import necessary LangChain modules:
 from operator import itemgetter
 from langchain.agents import create_sql_agent
 from langchain.agents.agent_types import AgentType
 from langchain_community.utilities import SQLDatabase
 from langchain_core.runnables import RunnablePassthrough
 
-# Custom schema chain: given an input dict with "question", return a schema snippet.
 def custom_schema_chain(input_dict: dict) -> str:
     question = input_dict["question"]
     schema_snippet = get_relevant_schema_snippet(question, _embed_model, _faiss_index, _metadata, _rev_fk_map, TOP_K)
     return schema_snippet
 
-# ------------------------------
-# Build the final agent chain:
-# ------------------------------
 def build_agent_chain(sqlcoder_llm) -> any:
     # Create the SQL query chain using our custom prompt template:
     query_chain = create_sql_agent(
@@ -208,7 +168,6 @@ def build_agent_chain(sqlcoder_llm) -> any:
     table_chain = {"input": itemgetter("question")} | custom_schema_chain
 
     # Use RunnablePassthrough to assign the dynamically obtained schema to the parameter "table_names_to_use"
-    # (In our custom prompt, we expect a placeholder {schema}; the agent will substitute this value.)
     full_chain = RunnablePassthrough.assign(table_names_to_use=table_chain) | query_chain
     return full_chain
 
@@ -244,3 +203,4 @@ if __name__ == "__main__":
     print("Query Results:\n", answer.get("results"))
     if "error" in answer:
         print("Error:", answer.get("error"))
+
