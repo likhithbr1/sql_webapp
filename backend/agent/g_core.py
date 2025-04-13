@@ -2,25 +2,22 @@ import json
 import re
 import numpy as np
 import faiss
-from sentence_transformers import SentenceTransformer
-from sqlalchemy import create_engine, text
 import torch
 import sqlparse
+
+from sqlalchemy import create_engine, text
+from sentence_transformers import SentenceTransformer
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-# ------------------------------
-# Configuration – update these paths and model names
-# ------------------------------
+# ------------------------------ Configuration ------------------------------
 INDEX_PATH = "schema_index/faiss_index.bin"
 META_PATH = "schema_index/table_metadata.json"
 EMBED_MODEL_NAME = "BAAI/bge-small-en"
-TOP_K = 3                      # top-K tables from semantic search
-DB_URI = "sqlite:///chatbot.db"  # SQLite DB
-MODEL_NAME = "defog/sqlcoder-7b-2"  # Hugging Face model name for SQLCoder
+TOP_K = 3
+DB_URI = "sqlite:///chatbot.db"
+MODEL_NAME = "defog/sqlcoder-7b-2"
 
-# ------------------------------
-# Load FAISS index and table metadata
-# ------------------------------
+# ------------------------------ FAISS + Metadata ------------------------------
 def load_faiss_and_metadata(index_path: str, meta_path: str):
     index = faiss.read_index(index_path)
     with open(meta_path, "r") as f:
@@ -60,27 +57,20 @@ def expand_with_related(idx_list, metadata, rev_fk_map):
     return tables.union(extra)
 
 def build_schema_snippet(table_names: set, metadata: dict) -> str:
-    ddl_list = []
-    # Preserve original order
-    for meta in metadata.values():
-        if meta["table_name"] in table_names:
-            ddl_list.append(meta["create_stmt"])
-    return "\n\n".join(ddl_list)
+    return "\n\n".join(
+        meta["create_stmt"] for meta in metadata.values() if meta["table_name"] in table_names
+    )
 
 def get_relevant_schema_snippet(query: str, embed_model, faiss_index, metadata, rev_fk_map, top_k: int) -> str:
     idxs = semantic_search(query, embed_model, faiss_index, top_k)
     final_tables = expand_with_related(idxs, metadata, rev_fk_map)
-    schema_text = build_schema_snippet(final_tables, metadata)
-    return schema_text
+    return build_schema_snippet(final_tables, metadata)
 
-# ------------------------------
-# Custom LLM Wrapper for SQLCoder using Hugging Face Transformers
-# ------------------------------
+# ------------------------------ SQLCoder LLM Wrapper ------------------------------
 from langchain_core.language_models.llms import LLM
 from typing import Optional, List, Mapping, Any
 
 class SQLCoderLLM(LLM):
-    """Custom LLM wrapper for the SQLCoder model using Hugging Face transformers."""
     def _llm_type(self) -> str:
         return "sqlcoder"
 
@@ -100,12 +90,10 @@ class SQLCoderLLM(LLM):
     def _identifying_params(self) -> Mapping[str, Any]:
         return {"model_name": MODEL_NAME}
 
-# ------------------------------
-# Query Generation Function using Hugging Face Model
-# ------------------------------
+# ------------------------------ Query Generation ------------------------------
 def generate_query(prompt: str) -> str:
     inputs = _tokenizer(prompt, return_tensors="pt").to(_model.device)
-    generated_ids = _model.generate(
+    outputs = _model.generate(
         **inputs,
         num_return_sequences=1,
         eos_token_id=_tokenizer.eos_token_id,
@@ -114,37 +102,55 @@ def generate_query(prompt: str) -> str:
         do_sample=False,
         num_beams=1,
     )
-    outputs = _tokenizer.batch_decode(generated_ids, skip_special_tokens=True)
+    result = _tokenizer.batch_decode(outputs, skip_special_tokens=True)[0]
     torch.cuda.empty_cache()
     if torch.cuda.is_available():
         torch.cuda.synchronize()
-    return sqlparse.format(outputs[0].split("[SQL]")[-1], reindent=True)
+    return sqlparse.format(result.split("[SQL]")[-1], reindent=True)
 
-# ------------------------------
-# Initialization of Global Components
-# ------------------------------
+# ------------------------------ Initialization ------------------------------
 def init_models():
     global _faiss_index, _metadata, _rev_fk_map, _embed_model, _tokenizer, _model, _engine, sqlcoder_llm
-    print("Initializing FAISS index, embeddings, SQLCoder model with Hugging Face transformers, and database connection …")
+
+    print("🔧 Initializing vector index, embeddings, and model…")
     _faiss_index, _metadata = load_faiss_and_metadata(INDEX_PATH, META_PATH)
     _rev_fk_map = build_reverse_fk_map(_metadata)
     _embed_model = SentenceTransformer(EMBED_MODEL_NAME)
-    
-    # Initialize Hugging Face tokenizer and model
+
     _tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
-    _model = AutoModelForCausalLM.from_pretrained(MODEL_NAME)
-    _model.to("cuda" if torch.cuda.is_available() else "cpu")
-    
+
+    if torch.cuda.is_available():
+        vram = torch.cuda.get_device_properties(0).total_memory
+        if vram > 15e9:
+            print("📦 Loading model in fp16 (high VRAM)")
+            _model = AutoModelForCausalLM.from_pretrained(
+                MODEL_NAME,
+                trust_remote_code=True,
+                torch_dtype=torch.float16,
+                device_map="auto"
+            )
+        else:
+            print("📦 Loading model in 8-bit mode (low VRAM)")
+            _model = AutoModelForCausalLM.from_pretrained(
+                MODEL_NAME,
+                trust_remote_code=True,
+                load_in_8bit=True,
+                device_map="auto"
+            )
+    else:
+        print("⚙️ Using CPU for model inference")
+        _model = AutoModelForCausalLM.from_pretrained(
+            MODEL_NAME,
+            trust_remote_code=True
+        )
+        _model.to("cpu")
+
     _engine = create_engine(DB_URI)
-    
-    # Initialize our custom LLM wrapper for SQLCoder
     sqlcoder_llm = SQLCoderLLM()
-    print("Models and DB connection loaded!")
+    print("✅ All models loaded and DB connected.")
     return sqlcoder_llm
 
-# ------------------------------
-# --- Integration with LangChain SQL Agent ---
-# ------------------------------
+# ------------------------------ LangChain Integration ------------------------------
 from operator import itemgetter
 from langchain.agents import create_sql_agent
 from langchain.agents.agent_types import AgentType
@@ -152,53 +158,36 @@ from langchain_community.utilities import SQLDatabase
 from langchain_core.runnables import RunnablePassthrough
 
 def custom_schema_chain(input_dict: dict) -> str:
-    question = input_dict["question"]
-    schema_snippet = get_relevant_schema_snippet(question, _embed_model, _faiss_index, _metadata, _rev_fk_map, TOP_K)
-    return schema_snippet
+    return get_relevant_schema_snippet(
+        input_dict["question"], _embed_model, _faiss_index, _metadata, _rev_fk_map, TOP_K
+    )
 
 def build_agent_chain(sqlcoder_llm) -> any:
-    # Create the SQL query chain using our custom prompt template:
     query_chain = create_sql_agent(
         llm=sqlcoder_llm,
         db=SQLDatabase.from_uri(DB_URI),
         agent_type=AgentType.ZERO_SHOT_REACT_DESCRIPTION,
         verbose=True
     )
-    # Wrap our custom schema chain so that it takes the "question" input
     table_chain = {"input": itemgetter("question")} | custom_schema_chain
-
-    # Use RunnablePassthrough to assign the dynamically obtained schema to the parameter "table_names_to_use"
     full_chain = RunnablePassthrough.assign(table_names_to_use=table_chain) | query_chain
     return full_chain
 
-# ------------------------------
-# Main function to process a question via the agent
-# ------------------------------
+# ------------------------------ Process Input Question ------------------------------
 def process_question_agentic(question: str) -> dict:
     try:
         agent_chain = build_agent_chain(sqlcoder_llm)
         result = agent_chain.invoke({"question": question})
         return result
     except Exception as e:
-        return {
-            "sql": None,
-            "results": [],
-            "error": str(e)
-        }
+        return {"sql": None, "results": [], "error": str(e)}
 
-# ------------------------------
-# Main script usage
-# ------------------------------
+# ------------------------------ Main Usage ------------------------------
 if __name__ == "__main__":
-    # Initialize models, schema tools, DB connection, and our custom SQLCoder LLM wrapper
     sqlcoder_llm = init_models()
-    
-    # Example user question
     user_question = "What are the top 5 orders by revenue in 2022?"
-    
-    # Process the question using the agentic chain
     answer = process_question_agentic(user_question)
-    
+
     print("Generated SQL:\n", answer.get("sql"))
     print("Query Results:\n", answer.get("results"))
     if "error" in answer:
