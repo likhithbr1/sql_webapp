@@ -5,6 +5,7 @@ import faiss
 from sentence_transformers import SentenceTransformer
 from llama_cpp import Llama
 from sqlalchemy import create_engine, text
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
 # ------------------------------
 # Configuration – update these paths and model names
@@ -14,9 +15,12 @@ META_PATH = "schema_index/table_metadata.json"
 EMBED_MODEL_NAME = "BAAI/bge-small-en"
 LLAMA_MODEL_PATH = "sqlcoder-7b-2.Q4_K_M.gguf"   # your GGUF file for SQLCoder
 TOP_K = 3                      # top-K tables from semantic search
-N_CTX = 2048                   # SQLCoder context window
-N_THREADS = 6                  # adjust for your CPU
-DB_URI = "mysql+pymysql://root:admin@localhost/chatbot"
+DB_URI = "sqlite:///chatbot.db"  # SQLite DB inside Colab
+MODEL_NAME = "defog/sqlcoder-7b-2"
+
+
+
+
 
 # ------------------------------
 # Load FAISS index and table metadata
@@ -137,6 +141,22 @@ Generate a SQL query to answer the following question:
 ```sql
 """
 
+
+def generate_query(prompt: str) -> str:
+    inputs = _tokenizer(prompt, return_tensors="pt").to("cuda")
+    generated_ids = _model.generate(
+        **inputs,
+        num_return_sequences=1,
+        eos_token_id=_tokenizer.eos_token_id,
+        pad_token_id=_tokenizer.eos_token_id,
+        max_new_tokens=400,
+        do_sample=False,
+        num_beams=1,
+    )
+    outputs = _tokenizer.batch_decode(generated_ids, skip_special_tokens=True)
+    torch.cuda.empty_cache()
+    torch.cuda.synchronize()
+    return sqlparse.format(outputs[0].split("[SQL]")[-1], reindent=True)
 # ------------------------------
 # Initialization of Global Components
 # ------------------------------
