@@ -1,0 +1,190 @@
+from flask import Flask, request, jsonify, render_template
+from flask_cors import CORS
+from core_logic import init_models, process_question_agentic
+
+# Initialize Flask app
+app = Flask(__name__)
+CORS(app)
+
+# Load all models and indexes at server startup
+print("🚀 Starting server...")
+init_models()
+
+@app.route("/")
+def index():
+    return render_template("index.html")
+
+@app.route("/api/health", methods=["GET"])
+def health_check():
+    return jsonify({"status": "ok"})
+
+@app.route("/api/query", methods=["POST"])
+def handle_query():
+    try:
+        data = request.get_json()
+
+        if not data or "question" not in data:
+            return jsonify({"error": "Missing 'question' in request body"}), 400
+
+        question = data["question"].strip()
+        if not question:
+            return jsonify({"error": "Empty question"}), 400
+
+        result = process_question_agentic(question)
+        return jsonify(result)
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000, debug=False, threaded=False)
+
+
+
+
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>EON Database Agent</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <div id="container">
+    <h1>EON Database Agent</h1>
+
+    <div id="chat-box"></div>
+
+    <div id="input-area">
+      <input type="text" id="user-input" placeholder="Ask a question..." />
+      <button onclick="sendQuestion()">Send</button>
+    </div>
+  </div>
+
+  <script src="{{ url_for('static', filename='script.js') }}"></script>
+</body>
+</html>
+
+
+
+async function sendQuestion() {
+  const input = document.getElementById("user-input");
+  const chatBox = document.getElementById("chat-box");
+  const question = input.value.trim();
+
+  if (!question) return;
+
+  // Show user message
+  const userDiv = document.createElement("div");
+  userDiv.className = "user-msg";
+  userDiv.textContent = "You: " + question;
+  chatBox.appendChild(userDiv);
+
+  input.value = "";
+  chatBox.scrollTop = chatBox.scrollHeight;
+
+  try {
+    const res = await fetch("/api/query", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question })
+    });
+
+    const data = await res.json();
+
+    const botDiv = document.createElement("div");
+    botDiv.className = "bot-msg";
+
+    if (data.error) {
+      botDiv.innerHTML = `<div style="color: red;"><strong>Error:</strong> ${data.error}</div>`;
+    } else {
+      botDiv.innerHTML = `<strong>Answer:</strong> ${data.answer}`;
+    }
+
+    chatBox.appendChild(botDiv);
+    chatBox.scrollTop = chatBox.scrollHeight;
+
+  } catch (err) {
+    const errorDiv = document.createElement("div");
+    errorDiv.className = "bot-msg";
+    errorDiv.innerHTML = `<strong>Bot:</strong> ❌ Unexpected error occurred: ${err.message}`;
+    chatBox.appendChild(errorDiv);
+    chatBox.scrollTop = chatBox.scrollHeight;
+  }
+}
+
+
+body {
+  font-family: Arial, sans-serif;
+  background: #f4f4f4;
+  margin: 0;
+  padding: 0;
+}
+
+#container {
+  max-width: 700px;
+  margin: 30px auto;
+  background: white;
+  padding: 20px;
+  border-radius: 8px;
+  border: 1px solid #ccc;
+}
+
+h1 {
+  text-align: center;
+  color: #333;
+}
+
+#chat-box {
+  height: 400px;
+  overflow-y: auto;
+  border: 1px solid #ccc;
+  padding: 10px;
+  background: #f9f9f9;
+  margin-bottom: 10px;
+}
+
+.user-msg,
+.bot-msg {
+  margin-bottom: 15px;
+  line-height: 1.4;
+}
+
+.user-msg {
+  text-align: right;
+  font-weight: bold;
+  color: #007bff;
+}
+
+.bot-msg {
+  background: #eef0f4;
+  padding: 10px;
+  border-radius: 4px;
+}
+
+.bot-msg pre {
+  background: #eee;
+  padding: 8px;
+  white-space: pre-wrap;
+  font-family: Consolas, monospace;
+  font-size: 14px;
+}
+
+#input-area {
+  display: flex;
+  gap: 10px;
+}
+
+input {
+  flex: 1;
+  padding: 10px;
+  font-size: 16px;
+}
+
+button {
+  padding: 10px 20px;
+  font-size: 16px;
+  cursor: pointer;
+}
+
