@@ -116,7 +116,7 @@ def init_models():
     print("✅ Model loaded (VRAM:", round(vram / 1e9, 2), "GB)")
 
 # ------------------------------
-# LangChain SQL Agent Integration
+# LangChain SQL Query Chain Integration
 # ------------------------------
 class SQLCoderLLM(LLM):
     def _llm_type(self) -> str:
@@ -134,14 +134,14 @@ def custom_schema_chain(input_dict: dict) -> dict:
     idxs = semantic_search(question, _embed_model, _faiss_index, TOP_K)
     tables = expand_with_related(idxs, _metadata, _rev_fk_map)
     schema = build_schema_snippet(tables, _metadata)
-    return {"table_names_to_use": schema}
+    return {"schema": schema}  # ✅ correct key expected by create_sql_query_chain
 
 def build_agent_chain(sqlcoder_llm):
     db = SQLDatabase.from_uri(DB_URI)
-    query_chain = create_sql_query_chain(llm=sqlcoder_llm, db=db, verbose=True)
+    query_chain = create_sql_query_chain(llm=sqlcoder_llm, db=db)
     input_mapper = RunnableLambda(lambda x: {"question": x["question"]})
     table_chain = RunnableLambda(custom_schema_chain)
-    full_chain = input_mapper | RunnablePassthrough.assign(table_names_to_use=table_chain) | query_chain
+    full_chain = input_mapper | RunnablePassthrough.assign(**table_chain.invoke({"question": "placeholder"})) | query_chain
     return full_chain
 
 def process_question_agentic(question: str) -> dict:
@@ -152,3 +152,4 @@ def process_question_agentic(question: str) -> dict:
         return result
     except Exception as e:
         return {"sql": None, "results": [], "error": str(e)}
+
