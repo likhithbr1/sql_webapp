@@ -126,9 +126,9 @@ def init_models():
         )
     print("✅ Model loaded (VRAM:", round(vram / 1e9, 2), "GB)")
 
-
 def retry_generate_query(question: str, schema: str, max_retries: int = 2) -> dict:
     attempt = 0
+    final_sql = ""  # ✅ Avoid UnboundLocalError
     prompt = PROMPT_TEMPLATE.format(question=question, schema=schema)
 
     while attempt <= max_retries:
