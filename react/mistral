@@ -156,7 +156,34 @@ def process_question_agentic(question: str) -> dict:
     try:
         sqlcoder_llm = SQLCoderLLM()
         agent_chain = build_agent_chain(sqlcoder_llm)
-        result = agent_chain.invoke({"input": question, "question": question})
-        return result
+
+        # 🔁 Run the agent chain
+        output = agent_chain.invoke({"input": question, "question": question})
+
+        # 🧠 Attempt to extract SQL from intermediate steps
+        sql_query = None
+        if isinstance(output, dict):
+            # In LangChain agent, final answer often in output["output"]
+            sql_query = output.get("output", None)
+
+        # 🗄️ Try to run SQL if valid
+        if sql_query:
+            engine = create_engine(DB_URI)
+            with engine.connect() as connection:
+                result = connection.execute(text(sql_query))
+                rows = [dict(row._mapping) for row in result.fetchall()]
+        else:
+            rows = []
+
+        return {
+            "sql": sql_query or "No SQL parsed from agent output.",
+            "results": rows,
+            "agent_output": output
+        }
+
     except Exception as e:
-        return {"sql": None, "results": [], "error": str(e)}
+        return {
+            "sql": None,
+            "results": [],
+            "error": str(e)
+        }
