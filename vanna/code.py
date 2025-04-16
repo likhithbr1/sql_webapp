@@ -167,3 +167,64 @@ def submit_prompt(self, prompt: str, **kwargs) -> str:
     return result
 
 
+
+
+# Step 3: Define custom LLM wrapper
+class MyCustomLLM(VannaBase):
+    def __init__(self, config=None):
+        self.tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+        vram = torch.cuda.get_device_properties(0).total_memory
+
+        if vram > 15e9:
+            self.model = AutoModelForCausalLM.from_pretrained(
+                MODEL_NAME,
+                trust_remote_code=True,
+                torch_dtype=torch.float16,
+                device_map="auto"
+            )
+        else:
+            self.model = AutoModelForCausalLM.from_pretrained(
+                MODEL_NAME,
+                trust_remote_code=True,
+                load_in_8bit=True,
+                device_map="auto"
+            )
+
+        print(f"✅ Model loaded (VRAM: {round(vram / 1e9, 2)} GB)")
+
+    def submit_prompt(self, prompt: str, **kwargs) -> str:
+        # Join prompt list if necessary
+        if isinstance(prompt, list):
+            prompt = "\n\n".join(prompt)
+
+        # Tokenize with padding and truncation
+        inputs = self.tokenizer(
+            prompt,
+            return_tensors="pt",
+            truncation=True,
+            padding=True
+        ).to("cuda")
+
+        # Generate response
+        with torch.no_grad():
+            outputs = self.model.generate(
+                **inputs,
+                max_new_tokens=512,
+                temperature=0.2,
+                do_sample=False
+            )
+
+        # Decode and print model output
+        result = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
+        print("\n🧾 Model Output:\n", result)
+        return result
+
+    def user_message(self, message: str) -> str:
+        return message
+
+    def system_message(self, message: str) -> str:
+        return message
+
+    def assistant_message(self, message: str) -> str:
+        return message
+
