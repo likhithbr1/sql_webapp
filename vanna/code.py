@@ -135,3 +135,35 @@ def train_from_db_schema_with_fks(vn, include_fk=True):
 
     print(f"✅ Trained on {trained} tables (FKs included: {include_fk})")
 
+
+
+
+
+def submit_prompt(self, prompt: str, **kwargs) -> str:
+    # Handle case where Vanna sends a list of strings
+    if isinstance(prompt, list):
+        prompt = "\n\n".join(prompt)  # Combine prompt parts
+
+    # Tokenize with padding/truncation enabled
+    inputs = self.tokenizer(
+        prompt,
+        return_tensors="pt",
+        truncation=True,
+        padding=True
+    ).to("cuda")
+
+    # Generate using model
+    with torch.no_grad():
+        outputs = self.model.generate(
+            **inputs,
+            max_new_tokens=512,
+            temperature=0.2,
+            do_sample=False
+        )
+
+    # Decode the output and log it
+    result = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
+    print("\n🧾 Model Output:\n", result)
+    return result
+
+
