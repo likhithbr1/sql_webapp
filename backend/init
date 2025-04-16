@@ -1,0 +1,36 @@
+def init_models():
+    global _faiss_index, _metadata, _rev_fk_map, _embed_model, _tokenizer, _model
+
+    print("🔧 Loading models and resources...")
+
+    # Load vector index and metadata
+    _faiss_index, _metadata = load_faiss_and_metadata(INDEX_PATH, META_PATH)
+    _rev_fk_map = build_reverse_fk_map(_metadata)
+    _embed_model = SentenceTransformer(EMBED_MODEL_NAME)
+
+    # ✅ Cache location (this path will persist across Colab sessions if you mount drive)
+    HF_MODEL_DIR = "/content/drive/MyDrive/sqlcoder_cached/sqlcoder-7b-2"
+    os.makedirs(HF_MODEL_DIR, exist_ok=True)
+
+    if not os.listdir(HF_MODEL_DIR):
+        print("⬇️ Downloading SQLCoder model to local drive...")
+        _tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+        _model = AutoModelForCausalLM.from_pretrained(
+            MODEL_NAME,
+            trust_remote_code=True,
+            torch_dtype=torch.float16 if torch.cuda.get_device_properties(0).total_memory > 15e9 else torch.float32,
+            device_map="auto"
+        )
+        _tokenizer.save_pretrained(HF_MODEL_DIR)
+        _model.save_pretrained(HF_MODEL_DIR)
+    else:
+        print("📂 Loading SQLCoder model from local drive...")
+        _tokenizer = AutoTokenizer.from_pretrained(HF_MODEL_DIR)
+        _model = AutoModelForCausalLM.from_pretrained(
+            HF_MODEL_DIR,
+            trust_remote_code=True,
+            torch_dtype=torch.float16 if torch.cuda.get_device_properties(0).total_memory > 15e9 else torch.float32,
+            device_map="auto"
+        )
+
+    print("✅ Model is ready (VRAM: {:.2f} GB)".format(torch.cuda.get_device_properties(0).total_memory / 1e9))
