@@ -1,4 +1,4 @@
-# Step 1: Install packages
+# Step 1: Install required packages
 %pip install 'vanna[chromadb]' transformers accelerate
 
 # Step 2: Imports
@@ -7,11 +7,11 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from vanna.base import VannaBase
 from vanna.chromadb import ChromaDB_VectorStore
 
-# Step 3: Configuration
+# === Configuration ===
 MODEL_NAME = "defog/sqlcoder-7b-2"
-DB_PATH = "chatbot.db"  # 👈 Ensure you've uploaded this file in Colab
+DB_PATH = "chatbot.db"  # 👈 Upload your SQLite DB to Colab first
 
-# Step 4: Custom LLM wrapper
+# Step 3: Custom LLM wrapper that satisfies VannaBase requirements
 class MyCustomLLM(VannaBase):
     def __init__(self, config=None):
         self.tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
@@ -45,17 +45,24 @@ class MyCustomLLM(VannaBase):
             )
         return self.tokenizer.decode(outputs[0], skip_special_tokens=True)
 
-# Step 5: Combine LLM + Vector Store
+    # ✅ Required abstract methods
+    def user_message(self, message: str) -> str:
+        return message
+
+    def system_message(self, message: str) -> str:
+        return message
+
+    def assistant_message(self, message: str) -> str:
+        return message
+
+# Step 4: Combine LLM and vector store
 class MyVanna(ChromaDB_VectorStore, MyCustomLLM):
     def __init__(self, config=None):
         ChromaDB_VectorStore.__init__(self, config=config)
         MyCustomLLM.__init__(self, config=config)
 
-# Step 6: FK-aware schema trainer
+# Step 5: Function to train on DDLs + foreign key info
 def train_from_db_schema_with_fks(vn, include_fk=True, table_types=('table',)):
-    """
-    Train Vanna using all DDLs from the SQLite DB, with optional FK extraction.
-    """
     placeholders = ','.join(['?'] * len(table_types))
     ddl_query = f"SELECT name, sql FROM sqlite_master WHERE sql IS NOT NULL AND type IN ({placeholders})"
     df_ddl = vn.run_sql(ddl_query, params=table_types)
@@ -82,16 +89,16 @@ def train_from_db_schema_with_fks(vn, include_fk=True, table_types=('table',)):
             vn.train(ddl=ddl)
             trained += 1
         except Exception as e:
-            print(f"❌ Training failed on table {table_name}: {e}")
+            print(f"❌ Training failed on {table_name}: {e}")
 
     print(f"✅ Trained on {trained} tables (FKs included: {include_fk})")
 
-# Step 7: Instantiate and train
+# Step 6: Instantiate Vanna + train
 vn = MyVanna()
 vn.connect_to_sqlite(DB_PATH)
 train_from_db_schema_with_fks(vn)
 
-# Step 8: Ask a question
+# Step 7: Ask a natural language question
 response = vn.ask("How many completed orders are there?")
-print("\n📊 SQL Response & Answer:")
+print("\n📊 Generated SQL & Answer:")
 print(response)
