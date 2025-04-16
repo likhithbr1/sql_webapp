@@ -102,3 +102,36 @@ train_from_db_schema_with_fks(vn)
 response = vn.ask("How many completed orders are there?")
 print("\n📊 Generated SQL & Answer:")
 print(response)
+
+
+
+def train_from_db_schema_with_fks(vn, include_fk=True):
+    ddl_query = "SELECT name, sql FROM sqlite_master WHERE sql IS NOT NULL AND type IN ('table')"
+    df_ddl = vn.run_sql(ddl_query)
+
+    trained = 0
+    for _, row in df_ddl.iterrows():
+        table_name = row['name']
+        ddl = row['sql']
+
+        if include_fk:
+            try:
+                fk_info = vn.run_sql(f"PRAGMA foreign_key_list('{table_name}')")
+                fk_clauses = []
+                for _, fk_row in fk_info.iterrows():
+                    fk_clauses.append(
+                        f"FOREIGN KEY ({fk_row['from']}) REFERENCES {fk_row['table']}({fk_row['to']})"
+                    )
+                if fk_clauses:
+                    ddl = ddl.rstrip(');') + ',\n  ' + ',\n  '.join(fk_clauses) + "\n);"
+            except Exception as e:
+                print(f"⚠️ FK fetch failed for {table_name}: {e}")
+
+        try:
+            vn.train(ddl=ddl)
+            trained += 1
+        except Exception as e:
+            print(f"❌ Training failed on {table_name}: {e}")
+
+    print(f"✅ Trained on {trained} tables (FKs included: {include_fk})")
+
