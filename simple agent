@@ -73,3 +73,55 @@ def main():
 # ------------------ Run ------------------
 if __name__ == "__main__":
     main()
+
+
+
+
+def main():
+    # Load SQLCoder model
+    raw_model = load_llama(LLAMA_MODEL_PATH)
+    llm = SQLCoderLLM(raw_model)
+
+    # Connect to MySQL DB
+    db = SQLDatabase.from_uri(DB_URI)
+
+    # ✅ Patch schema method to skip row previews
+    def schema_only(self, table_names: Optional[List[str]] = None) -> str:
+        from langchain_community.utilities.sql_database import SQLDatabase
+        from sqlalchemy import inspect
+
+        inspector = inspect(self._engine)
+        all_tables = inspector.get_table_names()
+
+        if table_names is None:
+            table_names = all_tables
+
+        schema_str = ""
+        for table in table_names:
+            if table not in all_tables:
+                continue
+            try:
+                create_stmt = str(self._dialect.get_table_ddl(self._engine, table))
+            except Exception:
+                create_stmt = f"-- Unable to fetch DDL for table {table}"
+            schema_str += f"CREATE TABLE {table} ...\n{create_stmt}\n\n"
+        return schema_str.strip()
+
+    # Apply the monkey patch
+    db.get_table_info = schema_only.__get__(db)
+
+    # Create LangChain SQL Agent
+    agent_executor = create_sql_agent(
+        llm=llm,
+        db=db,
+        agent_type=AgentType.ZERO_SHOT_REACT_DESCRIPTION,
+        verbose=True
+    )
+
+    # User prompt
+    question = input("❓ Ask a question about your database: ")
+
+    # Get result
+    result = agent_executor.invoke({"input": question})
+    print("\n📊 Answer:")
+    print(result)
