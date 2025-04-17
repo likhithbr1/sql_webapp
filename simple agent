@@ -100,3 +100,76 @@ print(response)
 ---
 
 If you need further assistance or have specific requirements, feel free to ask! 
+
+
+
+
+
+
+
+
+
+# 1. Install Required Packages
+!pip install --quiet langchain langchain-community transformers accelerate
+
+# 2. Import Necessary Libraries
+from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline
+from langchain_community.llms import HuggingFacePipeline
+from langchain_community.utilities import SQLDatabase
+from langchain.agents.agent_toolkits import create_sql_agent
+
+# 3. Load the SQLCoder-7B-2 Model
+model_id = "defog/sqlcoder-7b-2"
+tokenizer = AutoTokenizer.from_pretrained(model_id)
+model = AutoModelForCausalLM.from_pretrained(
+    model_id, 
+    device_map="auto", 
+    torch_dtype="auto"
+)
+
+# 4. Create the Hugging Face Pipeline
+hf_pipeline = pipeline(
+    "text-generation", 
+    model=model, 
+    tokenizer=tokenizer, 
+    max_new_tokens=512, 
+    do_sample=False
+)
+
+# 5. Wrap the Pipeline with LangChain's HuggingFacePipeline
+llm = HuggingFacePipeline(pipeline=hf_pipeline)
+
+# 6. Connect to Your SQLite Database
+# Ensure 'chatbot.db' is in your current working directory or provide the correct path
+db = SQLDatabase.from_uri("sqlite:///chatbot.db")
+
+# 7. Create the SQL Agent with Additional Configurations
+agent_executor = create_sql_agent(
+    llm=llm,
+    db=db,
+    agent_type="openai-tools",
+    verbose=True,
+    agent_executor_kwargs={
+        "handle_parsing_errors": True,
+        "return_intermediate_steps": True
+    }
+)
+
+# 8. Interact with the Chatbot
+# Example question
+question = "What are the names of all customers who purchased products in the last month?"
+
+# Get the response with intermediate steps
+response = agent_executor.invoke(question)
+
+# Access the final output
+print("Final Answer:", response.get("output"))
+
+# Access intermediate steps
+intermediate_steps = response.get("intermediate_steps", [])
+for step in intermediate_steps:
+    print("\nThought:", step[0].log)
+    print("Action:", step[0].tool)
+    print("Action Input:", step[0].tool_input)
+    print("Observation:", step[1])
+
