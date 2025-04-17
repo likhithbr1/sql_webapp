@@ -1,175 +1,71 @@
-Certainly! Below is a comprehensive Google Colab-compatible script to build a SQL chatbot using LangChain's SQL Agent with Defog's SQLCoder-7B-2 model. This script is tailored for your setup:
+# sql_chatbot_agent.py
 
-- **Model**: `defog/sqlcoder-7b-2` loaded via Hugging Face's pipeline.
-- **Database**: SQLite (`chatbot.db`).
-- **Hardware**: NVIDIA T4 GPU with 16GB VRAM.
-- **Environment**: Google Colab.
+from llama_cpp import Llama
+from langchain_core.language_models.llms import LLM
+from typing import Optional, List, Mapping, Any
+from langchain_community.utilities import SQLDatabase
+from langchain_community.agent_toolkits.sql.base import create_sql_agent
+from langchain.agents.agent_types import AgentType
 
----
+# ------------------ Config ------------------
+LLAMA_MODEL_PATH = "sqlcoder-7b-2.Q4_K_M.gguf"
+DB_URI = "mysql+pymysql://root:admin@localhost/chatbot"
+N_CTX = 2048
+N_THREADS = 8
 
-## 🛠️ Step-by-Step Implementation
+# ------------------ Load SQLCoder GGUF ------------------
+def load_llama(model_path: str):
+    print(f"Loading SQLCoder model from {model_path} …")
+    return Llama(
+        model_path=model_path,
+        n_gpu_layers=0,       # CPU-only
+        n_ctx=N_CTX,
+        n_threads=N_THREADS,
+        verbose=True,
+        n_batch=512,
+        use_mlock=True,
+        use_mmap=True,
+        logits_all=False,
+    )
 
-### 1. Install Required Packages
-Begin by installing the necessary Python packages
-
-```python
-!pip install --quiet langchain langchain-community langchain-openai transformers accelerate
-```
-
-### 2. Load the SQLCoder-7B-2 Model
-Since `SQLCoder-7B-2` isn't directly integrated with LangChain, we'll use Hugging Face's `pipeline` to load the model and create a wrapper to make it compatible
-
-```python
-from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline
-from langchain.llms.base import LLM
-from typing import Optional, List, Dict, Any
-
-# Load the tokenizer and model
-tokenizer = AutoTokenizer.from_pretrained("defog/sqlcoder-7b-2")
-model = AutoModelForCausalLM.from_pretrained("defog/sqlcoder-7b-2", device_map="auto", torch_dtype="auto")
-
-# Create the pipeline
-sqlcoder_pipeline = pipeline("text-generation", model=model, tokenizer=tokenizer, max_new_tokens=512, do_sample=False)
-
-# Define a wrapper to make it compatible with LangChain
-class HuggingFacePipelineLLM(LLM):
-    def __init__(self, pipeline):
-        self.pipeline = pipeline
-
-    def _call(self, prompt: str, stop: Optional[List[str]] = None) -> str:
-        result = self.pipeline(prompt)
-        return result[0]['generated_text']
-
-    @property
-    def _identifying_params(self) -> Dict[str, Any]:
-        return {}
+# ------------------ LLM Wrapper ------------------
+class SQLCoderLLM(LLM):
+    def __init__(self, model):
+        self.model = model
 
     @property
     def _llm_type(self) -> str:
-        return "huggingface_pipeline"
-```
+        return "sqlcoder-llama"
 
-### 3. Connect to Your SQLite Database
-Use LangChain's `SQLDatabase` utility to connect to your SQLite database
+    def _call(self, prompt: str, stop: Optional[List[str]] = None) -> str:
+        output = self.model(prompt, max_tokens=512, stop=stop)
+        return output["choices"][0]["text"]
 
-```python
-from langchain_community.utilities import SQLDatabase
+# ------------------ Main ------------------
+def main():
+    # Load model
+    raw_model = load_llama(LLAMA_MODEL_PATH)
+    llm = SQLCoderLLM(raw_model)
 
-# Replace 'chatbot.db' with the path to your SQLite database file
-db = SQLDatabase.from_uri("sqlite:///chatbot.db")
-```
+    # Connect to DB
+    db = SQLDatabase.from_uri(DB_URI)
 
-### 4. Create the SQL Agent
-Now, integrate the model and database with LangChain's SQL Agent
+    # Create SQL agent
+    agent_executor = create_sql_agent(
+        llm=llm,
+        db=db,
+        agent_type=AgentType.ZERO_SHOT_REACT_DESCRIPTION,
+        verbose=True
+    )
 
-```python
-from langchain.agents.agent_toolkits import create_sql_agent
+    # Accept user question
+    question = input("❓ Ask a question about your database: ")
 
-# Initialize the LLM
-llm = HuggingFacePipelineLLM(pipeline=sqlcoder_pipeline)
+    # Get result
+    result = agent_executor.invoke({"input": question})
+    print("\n📊 Answer:")
+    print(result)
 
-# Create the SQL agent
-agent_executor = create_sql_agent(llm=llm, db=db, agent_type="openai-tools", verbose=True)
-```
-
-### 5. Interact with the Chatbot
-You can now ask natural language questions, and the agent will generate and execute the corresponding SQL queries
-
-```python
-# Example question
-question = "What are the names of all customers who purchased products in the last month?"
-
-# Get the response
-response = agent_executor.invoke(question)
-
-print(response)
-```
-
----
-
-## 🔄 Notes and Considerations
-
-- **Compatibility** Direct integration of `SQLCoder-7B-2` with LangChain may require additional adjustments. The wrapper provided ensures compatibility by adapting the Hugging Face pipeline to LangChain's expected interfac.
-
-- **Performance** Running large models like `SQLCoder-7B-2` on a T4 GPU with 16GB VRAM should be feasible, but monitor resource usage to prevent potential out-of-memory issue.
-
-- **Prompt Engineering** Depending on your database schema and the complexity of queries, you might need to fine-tune prompts or provide schema information to improve accurac.
-
-- **Error Handling** Implement appropriate error handling to manage cases where the model generates incorrect SQL or when queries fai.
-
----
-
-If you need further assistance or have specific requirements, feel free to ask! 
-
-
-
-
-
-
-
-
-
-# 1. Install Required Packages
-!pip install --quiet langchain langchain-community transformers accelerate
-
-# 2. Import Necessary Libraries
-from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline
-from langchain_community.llms import HuggingFacePipeline
-from langchain_community.utilities import SQLDatabase
-from langchain.agents.agent_toolkits import create_sql_agent
-
-# 3. Load the SQLCoder-7B-2 Model
-model_id = "defog/sqlcoder-7b-2"
-tokenizer = AutoTokenizer.from_pretrained(model_id)
-model = AutoModelForCausalLM.from_pretrained(
-    model_id, 
-    device_map="auto", 
-    torch_dtype="auto"
-)
-
-# 4. Create the Hugging Face Pipeline
-hf_pipeline = pipeline(
-    "text-generation", 
-    model=model, 
-    tokenizer=tokenizer, 
-    max_new_tokens=512, 
-    do_sample=False
-)
-
-# 5. Wrap the Pipeline with LangChain's HuggingFacePipeline
-llm = HuggingFacePipeline(pipeline=hf_pipeline)
-
-# 6. Connect to Your SQLite Database
-# Ensure 'chatbot.db' is in your current working directory or provide the correct path
-db = SQLDatabase.from_uri("sqlite:///chatbot.db")
-
-# 7. Create the SQL Agent with Additional Configurations
-agent_executor = create_sql_agent(
-    llm=llm,
-    db=db,
-    agent_type="openai-tools",
-    verbose=True,
-    agent_executor_kwargs={
-        "handle_parsing_errors": True,
-        "return_intermediate_steps": True
-    }
-)
-
-# 8. Interact with the Chatbot
-# Example question
-question = "What are the names of all customers who purchased products in the last month?"
-
-# Get the response with intermediate steps
-response = agent_executor.invoke(question)
-
-# Access the final output
-print("Final Answer:", response.get("output"))
-
-# Access intermediate steps
-intermediate_steps = response.get("intermediate_steps", [])
-for step in intermediate_steps:
-    print("\nThought:", step[0].log)
-    print("Action:", step[0].tool)
-    print("Action Input:", step[0].tool_input)
-    print("Observation:", step[1])
+if __name__ == "__main__":
+    main()
 
