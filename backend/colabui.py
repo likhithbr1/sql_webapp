@@ -3,26 +3,29 @@ import subprocess
 import time
 from pyngrok import ngrok
 
-# Start Flask in a thread
-def run_flask():
-    subprocess.run(["python3", "app.py"])  # Your existing Flask backend
+# ✅ Directly run Flask from app.py's app
+def run_flask_direct():
+    import app
+    app.app.run(host="0.0.0.0", port=5000, debug=False, use_reloader=False)
 
-# Start Chainlit in a thread
+# ✅ Run chainlit via subprocess
 def run_chainlit():
-    subprocess.run(["chainlit", "run", "ui.py", "--port", "8000"])  # Your Chainlit app file
+    subprocess.run(["chainlit", "run", "ui.py", "--port", "8000"])
 
-# Start threads
-flask_thread = threading.Thread(target=run_flask)
+# 🔥 Start Flask thread
+flask_thread = threading.Thread(target=run_flask_direct)
 flask_thread.start()
 
-time.sleep(5)  # Let Flask start first
+# ⏱ Wait for Flask to spin up
+time.sleep(5)
 
+# 🔥 Start Chainlit thread
 chainlit_thread = threading.Thread(target=run_chainlit)
 chainlit_thread.start()
 
-# Start ngrok tunnels
+# 🌐 Open tunnels
 flask_url = ngrok.connect(5000)
 chainlit_url = ngrok.connect(8000)
 
-print(f"\n🔗 Flask API available at: {flask_url}")
-print(f"💬 Chainlit UI available at: {chainlit_url}")
+print(f"\n🔗 Flask API: {flask_url}")
+print(f"💬 Chainlit UI: {chainlit_url}")
